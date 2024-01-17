@@ -44,6 +44,39 @@ template <typename TPolyEncoder> struct ReedSolomon final {
     return ReedSolomon{n_po2, k_po2, n, poly_enc};
   }
 
+  std::vector<Shard>* c_encode(const Slice<uint8_t> bytes) {
+    assert(!bytes.empty());
+
+    const auto shard_len = shardLen(bytes.size());
+    assert(shard_len > 0);
+
+    const auto validator_count = wanted_n_;
+    const auto k2 = k_ * 2;
+
+    std::vector<Shard> *shards = new std::vector<Shard>;
+    shards->assign(validator_count, Shard(shard_len));
+
+    for (size_t i = 0ull; i < bytes.size(); i += k2) {
+      const size_t chunk_idx = i / k2;
+      const auto end = std::min(i + k2, bytes.size());
+      assert(i != end);
+
+      Slice<uint8_t> data_piece(&bytes[i], end - i);
+      assert(!data_piece.empty());
+      assert(data_piece.size() <= k2);
+
+      auto result = poly_enc_.encodeSub(local(), data_piece, n_, k_);
+      assert(!resultHasError(result));
+      for (size_t val_idx = 0ull; val_idx < validator_count; ++val_idx) {
+        auto &shard = (*shards)[val_idx];
+        const auto src = local()[val_idx].point_0;
+        TPolyEncoder::Descriptor::toBEBytes((uint8_t *)&shard[chunk_idx * 2ull],
+                                            src);
+      }
+    }
+    return shards;
+  }
+
   Result<std::vector<Shard>> encode(const Slice<uint8_t> bytes) {
     if (bytes.empty())
       return Error::kPayloadSizeIsZero;
@@ -127,6 +160,59 @@ template <typename TPolyEncoder> struct ReedSolomon final {
 
       assert(local().size() + gap == n_);
       auto result = poly_enc_.reconstructSub(acc, local(), received_shards, gap,
+                                             n_, k_, error_poly_in_log);
+      assert(!resultHasError(result));
+    }
+    return acc;
+  }
+
+  Result<std::vector<uint8_t> *>
+  c_reconstruct(const std::vector<Shard> &received_shards) {
+    const auto gap = math::sat_sub_unsigned(n_, received_shards.size());
+
+    size_t existential_count(0ull);
+    std::optional<size_t> first_shard_len;
+    for (size_t i = 0ull; i < std::min(n_, received_shards.size()); ++i) {
+      if (!received_shards[i].empty()) {
+        ++existential_count;
+        if (!first_shard_len)
+          first_shard_len = received_shards[i].size() / 2ull;
+        else if (*first_shard_len != received_shards[i].size() / 2ull)
+          return Error::kInconsistentShardLengths;
+      }
+    }
+
+    if (existential_count < k_)
+      return Error::kNeedMoreShards;
+
+    std::array<typename TPolyEncoder::Descriptor::Multiplier,
+               TPolyEncoder::Descriptor::kFieldSize>
+        error_poly_in_log = {0};
+
+    poly_enc_.evalErrorPolynomial(received_shards, gap, error_poly_in_log,
+                                  TPolyEncoder::Descriptor::kFieldSize);
+    const auto shard_len_in_syms = *first_shard_len;
+
+    auto acc = new std::vector<uint8_t>;
+    acc->reserve(shard_len_in_syms * 2ull * k_);
+
+    local().clear();
+    local().reserve(received_shards.size());
+
+    for (size_t i = 0; i < shard_len_in_syms; ++i) {
+      local().clear();
+
+      for (const auto &s : received_shards) {
+        if (s.empty())
+          local().emplace_back(Additive<typename TPolyEncoder::Descriptor>{0});
+        else
+          local().emplace_back(Additive<typename TPolyEncoder::Descriptor>{
+              TPolyEncoder::Descriptor::fromBEBytes(
+                  &s[i * sizeof(typename TPolyEncoder::Descriptor::Elt)])});
+      }
+
+      assert(local().size() + gap == n_);
+      auto result = poly_enc_.reconstructSub(*acc, local(), received_shards, gap,
                                              n_, k_, error_poly_in_log);
       assert(!resultHasError(result));
     }

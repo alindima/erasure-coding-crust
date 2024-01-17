@@ -1,5 +1,5 @@
 use novelpoly::f2e16::AFFT;
-use novelpoly::{CodeParams, WrappedShard};
+use novelpoly::CodeParams;
 use std::os::raw::c_ulong;
 use std::slice;
 use std::time::Instant;
@@ -192,40 +192,34 @@ pub unsafe extern "C" fn ECCR_Test_MeasurePerformance(
 
     let (enc, shards) = {
         let start = Instant::now();
-        let shards = rs.encode::<WrappedShard>(&encoded[..]).expect(
+        let shards = rs.encode(&encoded[..]).expect(
             "Payload non-empty, shard sizes are uniform, and validator numbers checked; qed",
         );
         let end = Instant::now();
         (end.duration_since(start), shards)
     };
 
-    let threshold = recovery_threshold(n_validators as usize).unwrap();
-    let payload_bytes;
+    // let threshold = recovery_threshold(n_validators as usize).unwrap();
 
-    let dec = {
-        // let shards = shards
-        //     .into_iter()
-        //     .enumerate()
-        //     .map(|(index, ws)| {
-        //         if index >= threshold && index <= (threshold * 2) {
-        //             Some(ws)
-        //         } else {
-        //             None
-        //         }
-        //     })
-        //     .collect::<Vec<Option<_>>>();
-        let shards = shards
-            .into_iter()
-            .map(|ws| Some(ws))
-            .collect::<Vec<Option<_>>>();
-        let now = Instant::now();
-        payload_bytes = rs.reconstruct(shards).unwrap();
-        let new_now = Instant::now();
-        new_now.duration_since(now)
-    };
+    // let dec = {
+    //     let shards = shards
+    //         .into_iter()
+    //         .enumerate()
+    //         .map(|(index, ws)| if index >= threshold && index <= (threshold * 2) {
+    //             Some(ws)
+    //         } else {
+    //             None
+    //         })
+    //         .collect::<Vec<Option<_>>>();
+    //     // let shards = shards.into_iter().map(|shard| shard.map(|s| s.into_inner())).collect();
+    //     let now = Instant::now();
+    //     let payload_bytes = rs.reconstruct(shards).unwrap();
+    //     let new_now = Instant::now();
+    //     new_now.duration_since(now)
+    // };
 
     usEncoding.map(|val| *val = enc.as_micros() as u64);
-    usDecoding.map(|val| *val = dec.as_micros() as u64);
+    // usDecoding.map(|val| *val = dec.as_micros() as u64);
     NPRSResult::Ok
 }
 
@@ -253,12 +247,12 @@ pub unsafe extern "C" fn ECCR_obtain_chunks(
 
     let shards = params
         .make_encoder()
-        .encode::<WrappedShard>(&encoded[..])
+        .encode(&encoded[..])
         .expect("Payload non-empty, shard sizes are uniform, and validator numbers checked; qed");
 
     let mut output_chunks = vec![];
     for (index, name) in shards.into_iter().enumerate() {
-        let mut v = name.into_inner();
+        let mut v = name;
         let db = DataBlock {
             array: v.as_mut_ptr(),
             length: v.len() as _,
@@ -303,7 +297,7 @@ pub unsafe extern "C" fn ECCR_reconstruct(
         Ok(p) => p,
         Err(e) => return e,
     };
-    let mut received_shards: Vec<Option<WrappedShard>> = vec![None; n_validators];
+    let mut received_shards: Vec<Option<Vec<u8>>> = vec![None; n_validators];
     let mut shard_len = None;
     let chunks = slice::from_raw_parts((*input_chunks).data, (*input_chunks).count as usize);
 
@@ -328,9 +322,8 @@ pub unsafe extern "C" fn ECCR_reconstruct(
             return NPRSResult::NonUniformChunks;
         }
 
-        received_shards[chunk.index as usize] = Some(WrappedShard::new(
-            slice::from_raw_parts(chunk.data.array, chunk.data.length as usize).to_vec(),
-        ));
+        received_shards[chunk.index as usize] =
+            Some(slice::from_raw_parts(chunk.data.array, chunk.data.length as usize).to_vec());
     }
 
     let mut payload_bytes = match params.make_encoder().reconstruct(received_shards) {

@@ -13,7 +13,7 @@ if (TESTING OR BENCHMARK)
   include("cmake/3rdparty/Hunter/init.cmake")
   HunterGate(
       URL "https://github.com/soramitsu/soramitsu-hunter/archive/v0.23.257-soramitsu18.tar.gz"
-      SHA1 "db065ce74581f07e552e8bae5ef955100caa1a01"
+      SHA1 "da125eed03642e5a125f38dd6d04708508789035"
   )
 endif ()
 
